@@ -41,17 +41,30 @@ function assertExcludes(source, pattern, label) {
   if (pattern.test(source)) throw new Error(`Prime Agent compatibility check failed: ${label}`);
 }
 
+const directModePattern = /\bctx\.mode\b/;
+const directStreamingBehaviorPattern = /\bevent\.streamingBehavior\b/;
+const legacyNamedImportPattern = /import\s*\{[^}]*\b(?:CONFIG_DIR_NAME|ProjectTrustStore|hasTrustRequiringProjectResources)\b[^}]*\}\s*from\s*["']@earendil-works\/pi-coding-agent["']/s;
+for (const [pattern, forbiddenExample, label] of [
+  [directModePattern, "ctx.mode", "direct ctx.mode guard"],
+  [directStreamingBehaviorPattern, "event.streamingBehavior", "direct streamingBehavior guard"],
+  [legacyNamedImportPattern, 'import { ProjectTrustStore } from "@earendil-works/pi-coding-agent"', "legacy named-import guard"],
+]) {
+  if (!pattern.test(forbiddenExample)) {
+    throw new Error(`Prime Agent compatibility check failed: ${label} does not match its forbidden example`);
+  }
+}
+
 const typeScriptFiles = await listTypeScriptFiles(extensionRoot);
 for (const path of typeScriptFiles) {
   if (path === hostPath) continue;
   const source = await readFile(path, "utf8");
   const label = relative(root, path);
-  assertExcludes(source, /ctx\.mode/, `${label} reaches into legacy ctx.mode instead of lib/host.ts`);
-  assertExcludes(source, /event\.streamingBehavior/, `${label} reaches into legacy input delivery instead of lib/host.ts`);
+  assertExcludes(source, directModePattern, `${label} reaches into legacy ctx.mode instead of lib/host.ts`);
+  assertExcludes(source, directStreamingBehaviorPattern, `${label} reaches into legacy input delivery instead of lib/host.ts`);
   assertExcludes(source, /\.theme\.fg\(/, `${label} styles status text directly instead of using the daemon-safe host formatter`);
   assertExcludes(
     source,
-    /import\s*\{[^}]*(?:CONFIG_DIR_NAME|ProjectTrustStore|hasTrustRequiringProjectResources)[^}]*\}\s*from\s*["']@earendil-works\/pi-coding-agent["']/s,
+    legacyNamedImportPattern,
     `${label} imports legacy-only coding-agent exports instead of lib/host.ts`,
   );
 }

@@ -13,6 +13,21 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const expectedVersion = process.env.PI_ORACLE_PRIME_AGENT_VERSION?.trim() || "0.7.2";
 
+async function findNamedPackageRoot(startPath) {
+  let candidate = resolve(startPath);
+  for (;;) {
+    try {
+      const packageJson = JSON.parse(await readFile(join(candidate, "package.json"), "utf8"));
+      if (packageJson.name === "prime-agent") return candidate;
+    } catch {
+      // Keep walking toward the filesystem root.
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) return undefined;
+    candidate = parent;
+  }
+}
+
 async function findPrimeAgentRoot() {
   const configuredRoot = process.env.PRIME_AGENT_PACKAGE_ROOT?.trim();
   if (configuredRoot) return resolve(configuredRoot);
@@ -24,18 +39,32 @@ async function findPrimeAgentRoot() {
     .find(Boolean);
   if (!executable) throw new Error("Prime Agent executable was not found on PATH");
 
-  let candidate = dirname(await realpath(executable));
-  for (;;) {
+  // A Windows npm global install uses a regular .cmd shim next to
+  // node_modules/prime-agent, so resolving from the shim directory is more
+  // reliable than following symlinks or walking the shim's ancestors.
+  const shimRequire = createRequire(join(dirname(executable), "prime-agent-resolver.cjs"));
+  for (const specifier of ["prime-agent/package.json", "prime-agent"]) {
     try {
-      const packageJson = JSON.parse(await readFile(join(candidate, "package.json"), "utf8"));
-      if (packageJson.name === "prime-agent") return candidate;
+      const resolvedEntry = shimRequire.resolve(specifier);
+      const packageRoot = await findNamedPackageRoot(dirname(resolvedEntry));
+      if (packageRoot) return packageRoot;
     } catch {
-      // Keep walking from the resolved CLI path to its package root.
+      // Package exports can hide package.json; the public entry or fallbacks
+      // below still locate normal Unix and package-manager installations.
     }
-    const parent = dirname(candidate);
-    if (parent === candidate) break;
-    candidate = parent;
   }
+
+  const resolvedExecutableRoot = await findNamedPackageRoot(dirname(await realpath(executable)));
+  if (resolvedExecutableRoot) return resolvedExecutableRoot;
+
+  try {
+    const npmRoot = execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim();
+    const npmPackageRoot = await findNamedPackageRoot(join(npmRoot, "prime-agent"));
+    if (npmPackageRoot) return npmPackageRoot;
+  } catch {
+    // npm is only a final cross-platform fallback.
+  }
+
   throw new Error(`Could not locate the prime-agent package root from ${executable}`);
 }
 
