@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "./scripts/prime-agent-types/coding-agent.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "extensions/**/*.ts",
+    "extensions/**/*.d.mts",
+    "scripts/prime-agent-types/coding-agent.d.ts",
+    "scripts/prime-agent-types/host-call-sites.ts"
+  ]
+}

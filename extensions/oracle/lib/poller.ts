@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildOracleStatusText, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
 import { parseTimestamp } from "../shared/time-helpers.mjs";
+import { setOracleStatusText } from "./host.js";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
 import {
   getJobDir,
@@ -29,7 +30,7 @@ import {
 import { promoteQueuedJobs } from "./queue.js";
 import { getProjectId, getSessionId } from "./runtime.js";
 
-interface OraclePollerContextSnapshot {
+export interface OraclePollerContextSnapshot {
   cwd: string;
   sessionFile: string | undefined;
   hasUI: boolean;
@@ -135,7 +136,7 @@ function jobCanNotifyContext(
   return job.projectId === getProjectId(cwd) && !jobHasLiveWakeupTarget(job, liveWakeupTargets);
 }
 
-function snapshotPollerContext(ctx: ExtensionContext): OraclePollerContextSnapshot {
+export function snapshotOraclePollerContext(ctx: ExtensionContext): OraclePollerContextSnapshot {
   return {
     cwd: ctx.cwd,
     sessionFile: getSessionFile(ctx),
@@ -160,30 +161,29 @@ function getJobCountsForSession(sessionFile: string | undefined, cwd: string): {
     );
 }
 
-function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
+export function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
   if (!snapshot.hasUI) return;
   if (!snapshot.sessionFile) {
-    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", "oracle: unavailable"));
+    setOracleStatusText(snapshot.ui, "oracle: unavailable", "error");
     return;
   }
   const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
   const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd)) ?? "loaded";
   const statusText = buildOracleStatusText(counts, readiness);
   if (counts.active > 0) {
-    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("success", statusText));
+    setOracleStatusText(snapshot.ui, statusText, "success");
   } else if (readiness === "auth_needed" || readiness === "config_error") {
-    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", statusText));
+    setOracleStatusText(snapshot.ui, statusText, "error");
   } else {
-    snapshot.ui.setStatus("oracle", statusText);
+    setOracleStatusText(snapshot.ui, statusText);
   }
 }
 
 export function refreshOracleStatus(ctx: ExtensionContext): void {
-  refreshOracleStatusSnapshot(snapshotPollerContext(ctx));
+  refreshOracleStatusSnapshot(snapshotOraclePollerContext(ctx));
 }
 
-export function setOracleReadiness(ctx: ExtensionContext, readiness: OracleReadinessStatus): void {
-  const snapshot = snapshotPollerContext(ctx);
+export function setOracleReadinessSnapshot(snapshot: OraclePollerContextSnapshot, readiness: OracleReadinessStatus): void {
   if (snapshot.sessionFile) readinessBySession.set(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd), readiness);
   refreshOracleStatusSnapshot(snapshot);
 }
@@ -366,11 +366,11 @@ async function scan(
 }
 
 export async function scanOracleJobsOnce(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, options: OraclePollerOptions = {}): Promise<void> {
-  await scan(pi, snapshotPollerContext(ctx), workerPath, options.hooks);
+  await scan(pi, snapshotOraclePollerContext(ctx), workerPath, options.hooks);
 }
 
 export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs: number, workerPath: string, options: OraclePollerOptions = {}): void {
-  const snapshot = snapshotPollerContext(ctx);
+  const snapshot = snapshotOraclePollerContext(ctx);
   const sessionKey = getPollerSessionKey(snapshot.sessionFile, snapshot.cwd);
   const existing = activePollers.get(sessionKey);
   if (existing) {

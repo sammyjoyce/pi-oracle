@@ -1,8 +1,8 @@
 # pi-oracle
 
-`pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
+`pi-oracle` lets a `pi` or Prime Agent session send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into the originating coding-agent session when the answer is ready.
 
-> Status: experimental public beta. Current local validation baseline is pi `0.80.9`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Current host baselines are pi `0.80.9` and Prime Agent `0.7.2`. The existing platform-smoke matrix covers pi on macOS, Linux, and Windows native with Chromium-family browsers; Prime Agent compatibility has a separate package/type/host-behavior gate and should not be read as the same cross-platform matrix. Pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block newer host releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -15,27 +15,27 @@ pi-oracle:
   3. starts an isolated provider web runtime in the background
   4. uploads the archive and prompt to the selected provider
   5. saves the response/artifacts under /tmp/oracle-<job-id>/
-  6. sends a best-effort wake-up back to the matching pi session
+  6. sends a best-effort wake-up back to the matching coding-agent session
 
 Later: /oracle-read <job-id>
 ```
 
-What you are seeing: the local `pi` agent keeps control of context selection and safety checks, while the selected web provider handles the expensive second-opinion work asynchronously. If the wake-up is missed, the result still lives on disk and can be read by job id.
+What you are seeing: the local `pi` or Prime Agent host keeps control of context selection and safety checks, while the selected web provider handles the expensive second-opinion work asynchronously. If the wake-up is missed, the result still lives on disk and can be read by job id.
 
 ## Who this is for
 
-Use `pi-oracle` if you use `pi` and want a larger asynchronous reviewer, planner, or analyst that can use your real ChatGPT or Grok web account instead of an API model.
+Use `pi-oracle` if you use `pi` or Prime Agent and want a larger asynchronous reviewer, planner, or analyst that can use your real ChatGPT or Grok web account instead of an API model.
 
 It is most useful for:
 
 - maintainers reviewing broad repo changes before shipping
-- agents that need a slower second opinion without blocking the main `pi` turn
+- agents that need a slower second opinion without blocking the main coding-agent turn
 - migration, architecture, or failure-mode analysis that benefits from a large archive
 - follow-up questions that should continue the same provider thread later
 
 Do not use it for:
 
-- short local coding tasks that `pi` can handle directly
+- short local coding tasks that the active coding agent can handle directly
 - projects that must never be uploaded to ChatGPT.com, Grok, or another configured web provider
 - machines outside the currently supported local browser/tooling setup
 
@@ -59,6 +59,8 @@ A normal coding-agent turn is the wrong shape for some work: the task may need a
 
 ### 1. Install
 
+#### pi
+
 From npm:
 
 ```bash
@@ -71,7 +73,25 @@ Or from GitHub:
 pi install https://github.com/fitchmultz/pi-oracle
 ```
 
-To update the package later, use `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates pi itself only. Versioned npm/git refs stay pinned until you change the configured source.
+Update with `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates pi itself only.
+
+#### Prime Agent
+
+Install the GitHub package:
+
+```bash
+prime-agent package install git:github.com/fitchmultz/pi-oracle
+```
+
+Or try it for one run without changing package settings:
+
+```bash
+prime-agent -e git:github.com/fitchmultz/pi-oracle
+```
+
+After the Prime-capable release is published to npm, `npm:pi-oracle` can be used with `prime-agent package install`, `prime-agent -e`, and `prime-agent package update`. See the [Prime Agent integration guide](docs/PRIME_AGENT.md) for host-specific configuration and development-branch testing.
+
+Versioned npm/git refs stay pinned until you change the configured source.
 
 ### 2. Check requirements
 
@@ -79,12 +99,12 @@ You need:
 
 - macOS, Linux, or Windows native
 - Node.js 22.19.0 or newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
-- Suggested tested floor: `pi` 0.80.9 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
+- Tested host baselines: pi 0.80.9 and Prime Agent 0.7.2; other versions are not blocked by package metadata but are outside the recorded compatibility baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser` and `tar` available on the machine; `zstd` is also required when submitting ChatGPT `.tar.zst` archives
 - on macOS APFS clone mode, `cp` available on PATH or via `PI_ORACLE_CP_PATH`; Linux/Windows runtime profile copies use Node's recursive copy
-- a normal persisted `pi` session, not `pi --no-session`
+- a normal persisted coding-agent session; do not start `pi` or `prime-agent` with `--no-session`
 - on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
 
 ### 3. Sync provider auth once
@@ -109,7 +129,7 @@ Expected result:
 - If local packing is too large, the prompt treats that as a retryable archive-selection failure and narrows automatically before surfacing the problem.
 - The job uploads a repo archive to the selected provider, capped at 250 MiB for ChatGPT or 200 MiB for Grok after default exclusions/pruning.
 - The response is saved under `/tmp/oracle-<job-id>/response.md` by default.
-- The matching `pi` session gets one best-effort wake-up when the job finishes.
+- The matching `pi` or Prime Agent session gets one best-effort wake-up when the job finishes.
 
 If the wake-up does not arrive, run:
 
@@ -150,7 +170,7 @@ flowchart LR
     D --> E["Detached worker clones isolated auth seed profile"]
     E --> F["Selected provider receives archive + prompt"]
     F --> G["Response/artifacts saved under oracle job dir"]
-    G --> H["Best-effort wake-up to matching pi session"]
+    G --> H["Best-effort wake-up to matching coding-agent session"]
 ```
 
 Key design choices:
@@ -186,9 +206,16 @@ Agent-facing tools:
 
 Most users can start with defaults. Set an agent-level config only when you need a non-default provider, mode, preset, or browser profile.
 
-Pi 0.79+ gates project-local inputs behind project trust. `pi-oracle` preserves its historical risk-on extension behavior for existing users: project-local `.pi/extensions/oracle.json` safe overrides still load by default for compatibility. They are ignored when you explicitly opt out of project-local inputs with `--no-approve` or save a “do not trust” decision for the project. Privileged browser/auth settings still come only from the agent-level config.
+| Host | Agent-level config | Project-safe overrides |
+| --- | --- | --- |
+| pi | `~/.pi/agent/extensions/oracle.json` | `.pi/extensions/oracle.json` |
+| Prime Agent | `~/.prime/agent/extensions/oracle.json` | `.prime/agent/extensions/oracle.json` |
 
-`~/.pi/agent/extensions/oracle.json`
+Browser paths, cookie sources, and other privileged `auth.*` settings are accepted only from the agent-level config for both hosts. Project files are restricted to safe Oracle overrides.
+
+Pi 0.79+ gates project-local inputs behind project trust. `pi-oracle` preserves its historical behavior for existing users: `.pi/extensions/oracle.json` loads by default and is ignored when you explicitly opt out with `--no-approve` or save a “do not trust” decision. Prime Agent treats explicitly loaded repository resources as trusted code; Oracle still filters `.prime/agent/extensions/oracle.json` to the same safe project keys.
+
+Example agent-level config for the active host:
 
 ```json
 {
@@ -235,7 +262,7 @@ Before running `/oracle-auth` with this macOS path:
 2. Fully quit the browser so its `Cookies` database is stable.
 3. Find the profile `Cookies` SQLite DB path.
 4. Find the browser's macOS Keychain safe-storage item account and service name.
-5. Configure all of `browser.executablePath`, `auth.chromeCookiePath`, and `auth.chromiumKeychain` in `~/.pi/agent/extensions/oracle.json`.
+5. Configure all of `browser.executablePath`, `auth.chromeCookiePath`, and `auth.chromiumKeychain` in the agent-level Oracle config for your host (`~/.pi/agent/extensions/oracle.json` or `~/.prime/agent/extensions/oracle.json`).
 
 Example macOS Helium config:
 
@@ -337,10 +364,10 @@ This usually means the cookie import worked but the source cookies are not the a
 - Solve it in the auth/bootstrap browser if prompted.
 - Re-run `/oracle-auth` before submitting jobs again.
 
-### You see "Oracle requires a persisted pi session"
+### You see “Oracle requires a persisted pi session” or “Oracle requires a persisted Prime Agent session”
 
 - Do not run oracle from `pi --no-session`.
-- Start a normal persisted `pi` session, then use `/oracle` again.
+- Start a normal persisted `pi` or Prime Agent session, then use `/oracle` again.
 
 ### A job finished but no wake-up arrived
 
@@ -361,7 +388,7 @@ Install the missing local dependency and rerun the command. `zstd` is only neede
 
 ### Auto-detection picked the wrong browser profile
 
-- Set `auth.chromeProfile` in `~/.pi/agent/extensions/oracle.json`.
+- Set `auth.chromeProfile` in the agent-level Oracle config for your host.
 - For custom Chromium cookie sources, set `auth.chromeCookiePath` to the exact profile `Cookies` DB. Pair it with `auth.chromiumKeychain` only on macOS; on Linux, rely on Sweet Cookie's keyring/password environment options.
 - Re-run `/oracle-auth`.
 
@@ -375,6 +402,8 @@ Useful local checks:
 
 ```bash
 npm run check:oracle-extension
+npm run check:prime-agent
+npm run check:prime-agent:installed
 npm run check:platform-smoke
 npm run typecheck
 npm run typecheck:worker-helpers
@@ -391,11 +420,15 @@ Use the narrowest validation workflow that proves the change:
 | Situation | Command(s) |
 | --- | --- |
 | Everyday local iteration | `npm run verify:oracle` |
+| Prime Agent self-contained host/type behavior | `npm run check:prime-agent` |
+| Installed Prime Agent shipped declarations | `npm run check:prime-agent:installed` (expects 0.7.2 by default) |
 | Platform-focused syntax/invariant sanity | `npm run check:platform-smoke`, `npm run sanity:oracle:platform` |
 | Platform-sensitive runtime changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
 | Platform matrix proof | `npm run smoke:platform:all` |
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
 | Publish/release gate | `npm run release:check` |
+
+`check:prime-agent:installed` locates the `prime-agent` executable on `PATH` and compiles the full extension against the declarations shipped by that exact installation. Set `PRIME_AGENT_PACKAGE_ROOT` for a non-PATH install or `PI_ORACLE_PRIME_AGENT_VERSION` when deliberately validating a newer baseline.
 
 For macOS, Ubuntu, and Windows native package/build plus packed runtime validation, use [`docs/platform-smoke.md`](docs/platform-smoke.md). The full release gate is:
 
@@ -415,7 +448,7 @@ The proof checker is intentionally part of `release:check`; it fails if the proo
 
 The real runtime suite defaults to deterministic installed-tool execution so platform proof stays bounded. Provider/model defaults remain `zai/glm-5.2` for doctor/config and for optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` when needed. For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path. The optional second real-agent negative symlink check is opt-in via `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection by default without adding another model-agent turn to the platform release gate.
 
-For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). Ordinary pre-commit smoke runs can still use `instant` or `thinking_light`, but release proof must cover every canonical ChatGPT preset through the loaded extension.
+For manual end-to-end local-extension smoke testing under pi, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). For Prime Agent installation, configuration, and isolated host validation, use [`docs/PRIME_AGENT.md`](docs/PRIME_AGENT.md). Ordinary pre-commit smoke runs can still use `instant` or `thinking_light`, but release proof must cover every canonical ChatGPT preset through the loaded extension.
 
 ## Project map
 
@@ -430,6 +463,7 @@ For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_
 | `scripts/oracle-sanity-*` | Local sanity and archive-safety checks |
 | `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
 | [`docs/ORACLE_DESIGN.md`](docs/ORACLE_DESIGN.md) | Architecture, lifecycle, queueing, persistence, recovery behavior |
+| [`docs/PRIME_AGENT.md`](docs/PRIME_AGENT.md) | Prime Agent install, config paths, host behavior, and validation |
 | [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md) | Repeatable isolated `pi` validation workflow |
 | [`docs/ORACLE_RECOVERY_DRILL.md`](docs/ORACLE_RECOVERY_DRILL.md) | Safe expired-auth recovery drill |
 

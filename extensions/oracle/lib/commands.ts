@@ -1,7 +1,7 @@
 // Purpose: Register slash commands for oracle auth/bootstrap, status inspection, cancellation, and cleanup.
 // Responsibilities: Bridge command handlers to shared oracle lifecycle helpers, surface consistent summaries, and coordinate follow-up queue advancement.
 // Scope: Command-facing orchestration only; durable lifecycle mutations live in jobs/runtime/tools modules and browser execution stays in worker scripts.
-// Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi.
+// Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi and Prime Agent.
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import { normalizeOracleProviderAlias, type OracleProvider } from "./config.js";
+import { emitOracleUserOutput } from "./host.js";
 import { isOracleProjectTrusted } from "./trust.js";
 import {
   cancelOracleJob,
@@ -75,23 +76,6 @@ function parseOracleAuthProvider(args: string): OracleProvider | undefined {
   throw new Error("Usage: /oracle-auth [chatgpt|grok]");
 }
 
-function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
-  if (ctx.mode === "print") {
-    process.stdout.write(`${message}\n`);
-    return;
-  }
-  if (ctx.hasUI) {
-    ctx.ui.notify(message, level);
-    return;
-  }
-  pi.sendMessage({
-    customType: "oracle-command-output",
-    content: message,
-    display: true,
-    details: { level },
-  });
-}
-
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
@@ -99,11 +83,11 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       try {
         const provider = parseOracleAuthProvider(args);
         const providerLabel = provider === "grok" ? "Grok" : provider === "chatgpt" ? "ChatGPT" : "configured provider";
-        emitCommandOutput(pi, ctx, `Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
+        emitOracleUserOutput(pi, ctx, `Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
         const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
-        emitCommandOutput(pi, ctx, result, "info");
+        emitOracleUserOutput(pi, ctx, result, "info");
       } catch (error) {
-        emitCommandOutput(pi, ctx, error instanceof Error ? error.message : String(error), "warning");
+        emitOracleUserOutput(pi, ctx, error instanceof Error ? error.message : String(error), "warning");
       }
     },
   });
@@ -114,12 +98,12 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
-        emitCommandOutput(pi, ctx, "No oracle jobs found for this project", "info");
+        emitOracleUserOutput(pi, ctx, "No oracle jobs found for this project", "info");
         return;
       }
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        emitCommandOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
+        emitOracleUserOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
         return;
       }
       if (isTerminalOracleJob(job)) {
@@ -131,7 +115,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       }
       const summary = await summarizeJob(job.id);
       const recentJobs = !explicitJobId ? listRecentJobIds(ctx.cwd) : undefined;
-      emitCommandOutput(pi, ctx, [summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
+      emitOracleUserOutput(pi, ctx, [summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
     },
   });
 
@@ -141,12 +125,12 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
-        emitCommandOutput(pi, ctx, "No oracle jobs found for this project", "info");
+        emitOracleUserOutput(pi, ctx, "No oracle jobs found for this project", "info");
         return;
       }
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        emitCommandOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
+        emitOracleUserOutput(pi, ctx, `Oracle job ${jobId} was not found in this project`, "warning");
         return;
       }
       if (isTerminalOracleJob(job)) {
@@ -156,7 +140,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
           cwd: ctx.cwd,
         });
       }
-      emitCommandOutput(pi, ctx, await summarizeJob(job.id, { responsePreview: true }), "info");
+      emitOracleUserOutput(pi, ctx, await summarizeJob(job.id, { responsePreview: true }), "info");
     },
   });
 
@@ -165,20 +149,20 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
     handler: async (args, ctx) => {
       const jobId = args.trim();
       if (!jobId) {
-        emitCommandOutput(pi, ctx, "Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
+        emitOracleUserOutput(pi, ctx, "Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
         return;
       }
 
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        emitCommandOutput(pi, ctx, `Oracle job ${jobId} not found in this project`, "warning");
+        emitOracleUserOutput(pi, ctx, `Oracle job ${jobId} not found in this project`, "warning");
         return;
       }
       if (!isOpenOracleJob(job)) {
         if (isTerminalOracleJob(job)) {
-          emitCommandOutput(pi, ctx, `Job is already terminal: ${job.status}. Use /oracle-read ${job.id} for details or /oracle-clean ${job.id} to remove it.`, "info");
+          emitOracleUserOutput(pi, ctx, `Job is already terminal: ${job.status}. Use /oracle-read ${job.id} for details or /oracle-clean ${job.id} to remove it.`, "info");
         } else {
-          emitCommandOutput(pi, ctx, `Oracle job ${jobId} is not cancellable (${job.status})`, "info");
+          emitOracleUserOutput(pi, ctx, `Oracle job ${jobId} is not cancellable (${job.status})`, "info");
         }
         return;
       }
@@ -188,7 +172,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         await promoteQueuedJobs({ workerPath, source: "oracle_cancel_command" });
       }
       refreshOracleStatus(ctx);
-      emitCommandOutput(pi, ctx, formatOracleCancelOutcome(cancelled), "info");
+      emitOracleUserOutput(pi, ctx, formatOracleCancelOutcome(cancelled), "info");
     },
   });
 
@@ -197,19 +181,19 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
     handler: async (args, ctx: ExtensionCommandContext) => {
       const target = args.trim();
       if (!target) {
-        emitCommandOutput(pi, ctx, "Usage: /oracle-clean <job-id|all>", "warning");
+        emitOracleUserOutput(pi, ctx, "Usage: /oracle-clean <job-id|all>", "warning");
         return;
       }
 
       const jobs = target === "all" ? listJobsForCwd(ctx.cwd) : [readScopedJob(target, ctx.cwd)].filter(Boolean);
       if (jobs.length === 0) {
-        emitCommandOutput(pi, ctx, "No matching oracle jobs found", "warning");
+        emitOracleUserOutput(pi, ctx, "No matching oracle jobs found", "warning");
         return;
       }
 
       const nonTerminalJobs = jobs.filter((job): job is NonNullable<typeof job> => Boolean(job && !isTerminalOracleJob(job)));
       if (nonTerminalJobs.length > 0) {
-        emitCommandOutput(
+        emitOracleUserOutput(
           pi,
           ctx,
           `Refusing to remove non-terminal oracle job${nonTerminalJobs.length === 1 ? "" : "s"}: ${nonTerminalJobs.map((job) => job.id).join(", ")}`,
@@ -248,7 +232,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         : removedCount === jobs.length
           ? `Removed ${removedCount} oracle job director${removedCount === 1 ? "y" : "ies"}.`
           : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} due to cleanup blockers or warnings.`;
-      emitCommandOutput(pi, ctx, `${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
+      emitOracleUserOutput(pi, ctx, `${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
     },
   });
 }
