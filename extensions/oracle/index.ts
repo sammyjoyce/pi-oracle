@@ -10,17 +10,27 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
 import {
+  createOracleSessionLifecycle,
+  emitOracleUserOutput,
+  setOracleStatusText,
   getOracleInputDelivery,
   isOracleInteractiveContext,
   shouldExposeOraclePromptPaths,
   shouldRunOraclePoller,
 } from "./lib/host.js";
-import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
+import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
-import { isOracleProjectTrusted } from "./lib/trust.js";
-import { refreshOracleStatus, setOracleReadiness, startPoller, stopPoller } from "./lib/poller.js";
+import {
+  refreshOracleStatusSnapshot,
+  setOracleReadinessSnapshot,
+  snapshotOraclePollerContext,
+  startPoller,
+  stopPoller,
+  type OraclePollerContextSnapshot,
+} from "./lib/poller.js";
 import { promoteQueuedJobs } from "./lib/queue.js";
 import { assertOracleSubmitPrerequisites, hasPersistedSessionFile } from "./lib/runtime.js";
+import { isOracleProjectTrusted } from "./lib/trust.js";
 import { registerOracleTools } from "./lib/tools.js";
 
 function readPromptTemplate(path: string): string | undefined {
@@ -64,6 +74,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   const workerPath = join(extensionDir, "worker", "run-job.mjs");
   const authWorkerPath = join(extensionDir, "worker", "auth-bootstrap.mjs");
   const promptDir = join(extensionDir, "..", "..", "prompts");
+  const sessionLifecycle = createOracleSessionLifecycle();
 
   const oraclePrompt = readPromptTemplate(join(promptDir, "oracle.md"));
   const oracleFollowupPrompt = readPromptTemplate(join(promptDir, "oracle-followup.md"));
@@ -71,9 +82,9 @@ export default function oracleExtension(pi: ExtensionAPI) {
   registerOracleCommands(pi, authWorkerPath, workerPath);
   registerOracleTools(pi, workerPath, authWorkerPath);
 
-  async function runStartupMaintenance(ctx: ExtensionContext): Promise<void> {
+  async function runStartupMaintenance(cwd: string): Promise<void> {
     try {
-      await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_session_start", cwd: ctx.cwd }, async () => {
+      await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_session_start", cwd }, async () => {
         await reconcileStaleOracleJobs();
         await pruneTerminalOracleJobs();
       }, { timeoutMs: 250 });
@@ -84,37 +95,66 @@ export default function oracleExtension(pi: ExtensionAPI) {
     await promoteQueuedJobs({ workerPath, source: "oracle_session_start" });
   }
 
-  function startPollerForContext(ctx: ExtensionContext) {
+  function updateReadinessIfCurrent(
+    snapshot: OraclePollerContextSnapshot,
+    isCurrentLifecycle: () => boolean,
+    readiness: "loaded" | "ready" | "auth_needed" | "config_error",
+  ): void {
+    if (!isCurrentLifecycle()) return;
     try {
-      const sessionFile = getSessionFile(ctx);
+      setOracleReadinessSnapshot(snapshot, readiness);
+    } catch (error) {
+      console.error(`Oracle readiness update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function startPollerForContext(ctx: ExtensionContext): void {
+    const isCurrentLifecycle = sessionLifecycle.begin();
+    const snapshot = snapshotOraclePollerContext(ctx);
+    try {
       if (!shouldRunOraclePoller(ctx)) {
         stopPoller(ctx);
         return;
       }
-      if (!hasPersistedSessionFile(sessionFile)) {
+      if (!hasPersistedSessionFile(snapshot.sessionFile)) {
         stopPoller(ctx);
-        if (ctx.hasUI) ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: unavailable"));
+        if (snapshot.hasUI) {
+          setOracleStatusText(snapshot.ui, "oracle: unavailable", "accent");
+        }
         return;
       }
 
-      const config = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
-      setOracleReadiness(ctx, "loaded");
-      void assertOracleSubmitPrerequisites(config)
-        .then(() => setOracleReadiness(ctx, "ready"))
-        .catch((error) => setOracleReadiness(ctx, oracleReadinessFromError(error)));
-      void runStartupMaintenance(ctx).catch((error) => {
+      const config = loadOracleConfig(snapshot.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
+      updateReadinessIfCurrent(snapshot, isCurrentLifecycle, "loaded");
+      void assertOracleSubmitPrerequisites(config).then(
+        () => updateReadinessIfCurrent(snapshot, isCurrentLifecycle, "ready"),
+        (error) => updateReadinessIfCurrent(snapshot, isCurrentLifecycle, oracleReadinessFromError(error)),
+      );
+      void runStartupMaintenance(snapshot.cwd).catch((error) => {
+        if (!isCurrentLifecycle()) return;
         const message = `Oracle startup maintenance failed: ${error instanceof Error ? error.message : String(error)}`;
         console.error(message);
-        if (ctx.hasUI) ctx.ui.notify(message, "warning");
+        if (snapshot.hasUI) {
+          try {
+            snapshot.ui.notify(message, "warning");
+          } catch {
+            // The host may have detached while maintenance was finishing.
+          }
+        }
       });
       startPoller(pi, ctx, config.poller.intervalMs, workerPath);
-      refreshOracleStatus(ctx);
+      refreshOracleStatusSnapshot(snapshot);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       stopPoller(ctx);
-      setOracleReadiness(ctx, "config_error");
-      if (ctx.hasUI) {
-        ctx.ui.notify(message, "warning");
+      updateReadinessIfCurrent(snapshot, isCurrentLifecycle, "config_error");
+      console.error(message);
+      if (snapshot.hasUI) {
+        try {
+          snapshot.ui.notify(message, "warning");
+        } catch {
+          // Startup errors must not crash a daemon worker whose UI detached.
+        }
       }
     }
   }
@@ -136,12 +176,17 @@ export default function oracleExtension(pi: ExtensionAPI) {
     const parsed = parseOracleInput(event.text);
     if (!parsed) return { action: "continue" };
     if (!parsed.args || (parsed.command === "oracle-followup" && !/^\S+\s+\S/.test(parsed.args))) {
-      ctx.ui.notify(parsed.command === "oracle" ? "Usage: /oracle <request>" : "Usage: /oracle-followup <job-id> <request>", "warning");
+      emitOracleUserOutput(
+        pi,
+        ctx,
+        parsed.command === "oracle" ? "Usage: /oracle <request>" : "Usage: /oracle-followup <job-id> <request>",
+        "warning",
+      );
       return { action: "handled" };
     }
     const template = parsed.command === "oracle" ? oraclePrompt : oracleFollowupPrompt;
     if (!template?.trim()) {
-      ctx.ui.notify(`/${parsed.command} is unavailable because its internal dispatch prompt could not be loaded.`, "warning");
+      emitOracleUserOutput(pi, ctx, `/${parsed.command} is unavailable because its internal dispatch prompt could not be loaded.`, "warning");
       return { action: "handled" };
     }
     ctx.ui.notify("Preparing oracle job… running preflight", "info");
@@ -154,6 +199,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    sessionLifecycle.invalidate();
     stopPoller(ctx);
   });
 }

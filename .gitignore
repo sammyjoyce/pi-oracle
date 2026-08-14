@@ -6,6 +6,7 @@ node_modules/
 .debug/
 .platform-smoke-runs/
 .pi/
+.prime/
 .oracle-context/
 .scratchpad.md
 progress.md

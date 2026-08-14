@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- added native Prime Agent package support with Prime config discovery, project-safe overrides, archive exclusions, host-neutral session handling, and install/validation guidance
+- added a complete Prime-shaped extension contract fixture plus self-contained compile/behavior/static gates and an installed-Prime declaration check for the 0.7.2 baseline
+
+### Changed
+- centralized legacy pi and Prime Agent lifecycle, input-delivery, prompt-discovery, status-rendering, and command-output differences in the Oracle host adapter while preserving existing pi behavior
+
+### Fixed
+- made daemon/headless command output visible through Prime's session-result envelope instead of UI-only notifications
+- made status rendering tolerate Prime Agent UI availability before theme initialization
+- snapshot host state before async startup work and invalidate stale lifecycle callbacks after shutdown or reload
+
+### Validation
+- compile the full extension against both the project pi types and the Prime compatibility contract; exercise host behavior and static compatibility invariants before merge
+
 ## 0.7.20 - 2026-07-28
 
 ### Fixed

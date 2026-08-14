@@ -4,27 +4,39 @@
 // Usage: Included only by tsconfig.prime-agent.json.
 // Invariants/Assumptions: A Prime input event has text/source but no legacy delivery hint.
 import type {
+  ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
   InputEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
+  buildOraclePrimeCommandOutput,
+  emitOracleUserOutput,
+  formatOracleStatusText,
+  setOracleStatusText,
   getOracleInputDelivery,
   getOracleProjectConfigDirName,
   isOracleInteractiveContext,
+  isOraclePrimeContext,
   isOraclePrintContext,
   resolveOracleSavedProjectTrust,
   shouldExposeOraclePromptPaths,
   shouldRunOraclePoller,
 } from "../../extensions/oracle/lib/host.js";
 
+declare const api: ExtensionAPI;
 declare const context: ExtensionContext;
 declare const commandContext: ExtensionCommandContext;
 declare const input: InputEvent;
 
+buildOraclePrimeCommandOutput("status");
+emitOracleUserOutput(api, context, "status");
+formatOracleStatusText(context.ui, "success", "oracle: running");
+setOracleStatusText(context.ui, "oracle: running", "success");
 getOracleInputDelivery(input, context);
 getOracleProjectConfigDirName();
 isOracleInteractiveContext(context);
+isOraclePrimeContext(context);
 isOraclePrintContext(commandContext);
 shouldExposeOraclePromptPaths(context);
 shouldRunOraclePoller(context);

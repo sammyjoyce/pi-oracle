@@ -1,11 +1,11 @@
 // Purpose: Isolate pi/Prime Agent host API differences behind one stable oracle-facing adapter.
-// Responsibilities: Resolve host config paths, bridge legacy project-trust APIs, and normalize mode/input behavior.
+// Responsibilities: Resolve host config paths, bridge legacy project-trust APIs, normalize mode/input behavior, and guard host UI/lifecycle differences.
 // Scope: Coding-agent host compatibility only; oracle job, browser, and persistence behavior stays in sibling modules.
 // Usage: Imported by config, commands, runtime, and the extension entrypoint instead of reaching into host-specific APIs.
 // Invariants/Assumptions: Both hosts export getAgentDir and the shared extension contracts; legacy-only exports are optional.
 import { join, normalize, sep } from "node:path";
 import * as CodingAgentHost from "@earendil-works/pi-coding-agent";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type LegacyHostMode = "tui" | "rpc" | "print" | "json";
 type LegacyModeContext = ExtensionContext & { mode?: LegacyHostMode };
@@ -25,6 +25,20 @@ const PRIME_CONFIG_DIR = join(".prime", "agent");
 const PI_CONFIG_DIR = ".pi";
 const LEGACY_HOST_MODES = new Set<LegacyHostMode>(["tui", "rpc", "print", "json"]);
 
+export type OracleStatusTone = "accent" | "error" | "success";
+export type OracleCommandOutputLevel = "info" | "warning" | "error";
+
+const PRIME_HEADLESS_COMMAND_RESULT = {
+  name: "goal",
+  args: "oracle-command-output",
+  text: "/goal oracle-command-output",
+} as const;
+
+export interface OracleSessionLifecycle {
+  begin(): () => boolean;
+  invalidate(): void;
+}
+
 function hasPathSuffix(path: string, suffix: string): boolean {
   const normalizedPath = normalize(path);
   const normalizedSuffix = normalize(suffix);
@@ -40,6 +54,102 @@ function getLegacyStreamingBehavior(event: unknown): "steer" | "followUp" | unde
   if (!event || typeof event !== "object" || !("streamingBehavior" in event)) return undefined;
   const streamingBehavior = (event as { streamingBehavior?: unknown }).streamingBehavior;
   return streamingBehavior === "steer" || streamingBehavior === "followUp" ? streamingBehavior : undefined;
+}
+
+export function createOracleSessionLifecycle(): OracleSessionLifecycle {
+  let generation = 0;
+  return {
+    begin() {
+      const currentGeneration = ++generation;
+      return () => generation === currentGeneration;
+    },
+    invalidate() {
+      generation += 1;
+    },
+  };
+}
+
+export function formatOracleStatusText(
+  ui: ExtensionContext["ui"],
+  tone: OracleStatusTone,
+  text: string,
+): string {
+  try {
+    return ui.theme.fg(tone, text);
+  } catch {
+    // Prime daemon workers expose a serializable UI context before the TUI
+    // theme is initialized. Status text must remain safe in that headless gap.
+    return text;
+  }
+}
+
+export function setOracleStatusText(
+  ui: ExtensionContext["ui"],
+  text: string,
+  tone?: OracleStatusTone,
+): void {
+  try {
+    ui.setStatus("oracle", tone ? formatOracleStatusText(ui, tone, text) : text);
+  } catch {
+    // Footer presentation is optional, and a detached Prime UI bridge may have
+    // closed between a lifecycle guard and the status update.
+  }
+}
+
+export function isOraclePrimeContext(ctx: ExtensionContext): boolean {
+  return getLegacyHostMode(ctx) === undefined;
+}
+
+export function buildOraclePrimeCommandOutput(
+  message: string,
+  level: OracleCommandOutputLevel = "info",
+) {
+  return {
+    // Prime's text headless client selects assistant messages or this
+    // session-owned slash-result envelope. Extension commands have no return
+    // channel, so retain Oracle provenance inside a valid hidden envelope.
+    customType: "session_slash_command_result",
+    content: message,
+    display: false,
+    details: {
+      command: { ...PRIME_HEADLESS_COMMAND_RESULT },
+      success: level !== "error",
+      severity: level,
+      ...(level === "error" ? { error: message } : {}),
+      oracleCommandOutput: true,
+    },
+  };
+}
+
+export function emitOracleUserOutput(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  message: string,
+  level: OracleCommandOutputLevel = "info",
+): void {
+  if (isOraclePrintContext(ctx)) {
+    process.stdout.write(`${message}\n`);
+    return;
+  }
+  if (isOraclePrimeContext(ctx)) {
+    pi.sendMessage(buildOraclePrimeCommandOutput(message, level));
+    try {
+      if (ctx.hasUI) ctx.ui.notify(message, level);
+    } catch {
+      // The headless result remains available if its interactive UI detached.
+    }
+    return;
+  }
+  if (!ctx.hasUI) {
+    pi.sendMessage({
+      customType: "oracle-command-output",
+      content: message,
+      display: true,
+      details: { level },
+    });
+    return;
+  }
+  ctx.ui.notify(message, level);
 }
 
 export function getOracleAgentDir(): string {

@@ -571,7 +571,12 @@ async function createJobForTest(
   assert(created, "test job should exist after creation");
   assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
   assert(created.extensionProvenance?.packageName === "pi-oracle", "extension provenance should record the package name");
-  assert(created.extensionProvenance?.sourcePath.endsWith("pi-oracle"), "extension provenance should record the loaded extension source root");
+  const provenanceSourcePath = created.extensionProvenance?.sourcePath;
+  assert(provenanceSourcePath, "extension provenance should record the loaded extension source root");
+  assert(
+    await realpath(provenanceSourcePath) === await realpath(process.cwd()),
+    "extension provenance should record the current checkout root without assuming its directory name",
+  );
   await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
   return jobId;
 }
@@ -3560,10 +3565,10 @@ async function testLifecycleEventCutover(): Promise<void> {
   assert(extensionSource.includes('pi.on("session_start"'), "oracle extension should bind session_start");
   assert(!extensionSource.includes('pi.on("session_switch"'), "oracle extension must not bind removed session_switch event");
   assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
-  assert(extensionSource.includes('ctx.mode === "print" || ctx.mode === "json"'), "oracle extension should use Pi 0.78 mode metadata to skip background polling in one-shot modes");
-  assert(extensionSource.includes("hasPersistedSessionFile(sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
+  assert(extensionSource.includes("shouldRunOraclePoller(ctx)"), "oracle extension should route one-shot poller policy through the cross-host adapter");
+  assert(extensionSource.includes("hasPersistedSessionFile(snapshot.sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
   assert(extensionSource.includes("oracle: unavailable"), "oracle extension should mark oracle unavailable when no persisted session identity exists");
-  assert(extensionSource.includes("if (ctx.hasUI) ctx.ui.notify"), "oracle extension should surface startup-maintenance failures through available session UI as well as stderr");
+  assert(extensionSource.includes('snapshot.ui.notify(message, "warning")'), "oracle extension should surface current-session startup-maintenance failures through available host UI as well as stderr");
 }
 
 async function testOraclePromptTemplateCutover(): Promise<void> {
@@ -3577,6 +3582,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
+  const hostSource = await readFile(new URL("../extensions/oracle/lib/host.ts", import.meta.url), "utf8");
+  const trustSource = await readFile(new URL("../extensions/oracle/lib/trust.ts", import.meta.url), "utf8");
   const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
@@ -3632,12 +3639,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   ];
 
   assert(indexSource.includes('pi.on("input"'), "/oracle should be intercepted before TUI prompt-template expansion so verbose internals stay hidden");
-  assert(indexSource.includes('["print", "json", "rpc"].includes(ctx.mode)'), "oracle prompt fallback should keep print/json/rpc prompt-template expansion available");
-  assert(indexSource.includes('ctx.mode !== "tui"'), "oracle prompt interceptor should leave non-TUI modes to use prompt-template expansion");
+  assert(indexSource.includes("shouldExposeOraclePromptPaths(ctx)"), "oracle prompt fallback should route non-interactive legacy discovery through the host adapter");
+  assert(indexSource.includes("isOracleInteractiveContext(ctx)"), "oracle prompt interception should use the cross-host interactive-context adapter");
   assert(indexSource.includes('display: false'), "oracle dispatch instructions should be injected as a hidden custom message");
   assert(indexSource.includes('pi.sendUserMessage(formatOracleUserCommand'), "oracle TUI interceptor should persist the compact slash request as a real user message for prompt-history reloads");
   assert(indexSource.includes('pi.on("before_agent_start"'), "oracle TUI interceptor should inject hidden dispatch instructions on the reinjected user-message turn");
   assert(indexSource.includes('Preparing oracle job… running preflight'), "oracle command should show compact user-facing status before hidden dispatch");
+  assert(indexSource.includes("createOracleSessionLifecycle"), "Prime startup callbacks should be guarded by a session lifecycle generation");
+  assert(indexSource.includes("sessionLifecycle.invalidate()"), "session shutdown should invalidate pending Prime startup callbacks before context teardown");
+  assert(indexSource.includes("snapshotOraclePollerContext(ctx)"), "async startup work should capture plain poller state instead of retaining a live extension context");
+  assert(pollerSource.includes("setOracleStatusText"), "poller status rendering should tolerate uninitialized or detached Prime daemon UI bridges");
+  assert(trustSource.includes("ctx: ExtensionContext"), "project trust probing should accept the shared Prime/Pi ExtensionContext contract");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle internal dispatch prompt should contain the oracle dispatch instructions");
   assert(followUpPromptSource.includes("You are preparing an `/oracle-followup` job."), "/oracle-followup prompt template should contain follow-up dispatch instructions");
   assert(followUpPromptSource.includes("Call `oracle_preflight` immediately"), "/oracle-followup prompt should require an immediate oracle_preflight guard");
@@ -3735,7 +3747,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("For ChatGPT, use preset only when the user requests model control"), "oracle tool guidance should say preset is the ChatGPT selector");
   assert(toolsSource.includes("omit it for configured defaults") && toolsSource.includes("matching labels are normalized"), "oracle tool description should mention preset defaults and label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
-  assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
+  assert(readmeSource.includes("a normal persisted coding-agent session"), "README quickstart should surface the persisted-session requirement for both supported hosts");
   assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
   assert(readmeSource.includes("chatGptConversationId"), "README should document explicit existing ChatGPT thread targeting through chatGptConversationId");
   assert(readmeSource.includes("Normal `/oracle` jobs still start a fresh provider thread"), "README should state existing ChatGPT thread targeting is opt-in and defaults remain fresh-thread");
@@ -3832,7 +3844,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
   assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
   assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
-  assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
+  assert(runtimeSource.includes("getOracleHostDisplayName()"), "runtime should name the active coding-agent host when oracle lacks a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(runtimeSource.includes("resolveWorkspaceRoot"), "runtime should derive project identity from a stable workspace root instead of the raw current working directory");
   assert(runtimeSource.includes('"AGENTS.md"'), "runtime workspace-root detection should recognize project markers like AGENTS.md before widening to unrelated ancestor git roots");
@@ -3859,8 +3871,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
   assert(commandsSource.includes("source: \"oracle_read_command\""), "oracle-read should settle further wake-up retries through explicit command provenance");
   assert(commandsSource.includes("Recent jobs:"), "oracle-status should help users discover job ids when no explicit id is given");
-  assert(commandsSource.includes("ctx.mode === \"print\""), "oracle commands should emit stdout-friendly output in pi print mode");
-  assert(commandsSource.includes("oracle-command-output"), "oracle commands should emit displayed custom messages when no UI is available, such as pi JSON mode");
+  assert(commandsSource.includes("emitOracleUserOutput"), "oracle commands should route print, daemon, and interactive output through the cross-host output adapter");
+  assert(hostSource.includes("session_slash_command_result") && hostSource.includes("oracle-command-output"), "the host adapter should emit a Prime headless result envelope while preserving legacy JSON output");
   assert(commandsSource.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel command should require an explicit job id instead of silently cancelling the latest job");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
@@ -3903,9 +3915,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
   assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
   assert(!pollerSource.includes('readiness === "ready" ? "success"'), "poller should not color the idle ready footer as a success state");
-  assert(pollerSource.includes('snapshot.ui.setStatus("oracle", statusText);'), "poller should leave idle ready/loaded/queued oracle footer states in the default footer text color");
-  assert(pollerSource.includes('counts.active > 0') && pollerSource.includes('snapshot.ui.theme.fg("success", statusText)'), "poller should color running oracle jobs as success");
-  assert(pollerSource.includes('readiness === "auth_needed" || readiness === "config_error"') && pollerSource.includes('snapshot.ui.theme.fg("error", statusText)'), "poller should color broken oracle readiness states as error");
+  assert(pollerSource.includes('setOracleStatusText(snapshot.ui, statusText);'), "poller should leave idle ready/loaded/queued oracle footer states in the default footer text color");
+  assert(pollerSource.includes('counts.active > 0') && pollerSource.includes('setOracleStatusText(snapshot.ui, statusText, "success")'), "poller should color running oracle jobs as success through the daemon-safe host bridge");
+  assert(pollerSource.includes('readiness === "auth_needed" || readiness === "config_error"') && pollerSource.includes('setOracleStatusText(snapshot.ui, statusText, "error")'), "poller should color broken oracle readiness states as error through the daemon-safe host bridge");
   assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
   assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
@@ -4005,9 +4017,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(readmeSource.includes("Pi `0.80.9+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.9 floor without making it a hard peer requirement");
+  assert(readmeSource.includes("Current host baselines are pi `0.80.9` and Prime Agent `0.7.2`") && readmeSource.includes("optional wildcard peers"), "README should document both tested host baselines without making them hard peer requirements");
   assert(designSource.includes("pi` 0.80.9+") || designSource.includes("`pi` 0.80.9+"), "design doc should name the current suggested Pi 0.80.9 compatibility floor");
-  assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
+  assert(configSource.includes("resolveOracleSavedProjectTrust") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while routing saved Pi distrust through the cross-host adapter");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
